@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jfrog-image-digest-provider
+  namespace: gatekeeper-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      run: jfrog-image-digest-provider
+  template:
+    metadata:
+      labels:
+        run: jfrog-image-digest-provider
+    spec:
+      containers:
+      - image: provider:1.7
+        imagePullPolicy: IfNotPresent
+        name: jfrog-image-digest-provider
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+          allowPrivilegeEscalation: false 
+          runAsNonRoot: true
+          runAsUser: 1000
+        ports:
+        - containerPort: 8443
+          protocol: TCP
+        volumeMounts:
+          - name: jfrog-ca-cert
+            mountPath: /tmp/jfrog
+            readOnly: true
+          - name: gatekeeper-ca-cert
+            mountPath: /tmp/gatekeeper
+            readOnly: true
+        env:
+        - name: DEBUG
+          value: "true"
+        - name: JFROG_TOKEN_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: jfrog-token-secret
+              key: token
+      volumes:
+        - name: gatekeeper-ca-cert
+          secret:
+            secretName: gatekeeper-webhook-server-cert
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: jfrog-ca-cert
+          secret:
+            secretName: jfrog-provider-tls
+            items:
+              - key: tls.crt
+                path: server.crt
+              - key: tls.key
+                path: server.key
+      

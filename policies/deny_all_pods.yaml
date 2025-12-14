@@ -1,0 +1,12 @@
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: denypods
+metadata:
+  name: deny-pods
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+  parameters:
+    checkedRegistries: ["evidencetrial.jfrog.io"]
+    checkedPredicateTypes: ["https://slsa.dev/provenance/v1"]
