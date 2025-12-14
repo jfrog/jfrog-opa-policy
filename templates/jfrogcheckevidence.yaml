@@ -1,12 +1,12 @@
 apiVersion: templates.gatekeeper.sh/v1
 kind: ConstraintTemplate
 metadata:
-  name: denypods
+  name: jfrogcheckevidence
 spec:
   crd:
     spec:
       names:
-        kind: denypods
+        kind: jfrogcheckevidence
       validation:
         openAPIV3Schema:
           type: object
@@ -25,7 +25,7 @@ spec:
       - engine: Rego
         source: 
           rego: |
-            package denypods            
+            package jfrogcheckevidence            
             import data.lib.filter_images
             import future.keywords.in
             import future.keywords.contains
