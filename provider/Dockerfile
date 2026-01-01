@@ -1,4 +1,3 @@
-# v3.21.3
 FROM alpine@sha256:ea71a031ed91cd46b00d438876550bc765da43b4ae40f331a12daf62f0937758 AS builder
 
 RUN apk update --no-cache && apk add --no-cache go make
