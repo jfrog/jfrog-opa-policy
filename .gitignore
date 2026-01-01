@@ -1,16 +1,12 @@
 /.gocache
 /.gomodcache
-/_.jfrog.io.cer
-/_.jfrog.io.der
-/_.jfrog.io.pem
 /ca.crt
 /ca.key
 /ca.srl
 /k8s-commands.txt
-/pod_owner_must_be_provided.yaml
 /server.crt
 /server.csr
 /server.key
-/webhook.yam
+/webhook.yaml
 /examples/**
 provider/main
