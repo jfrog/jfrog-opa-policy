@@ -11,4 +11,5 @@
 /server.crt
 /server.csr
 /server.key
-/webhook.yaml
+/webhook.yam
+/examples/**

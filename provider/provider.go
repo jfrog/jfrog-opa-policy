@@ -304,6 +304,11 @@ func providerHandler(w http.ResponseWriter, req *http.Request) {
 	if svc.Debug {
 		fmt.Println("predicate types:", svc.PredicateTypes)
 	}
+	if len(providerRequest.Request.Keys) == 1 {
+		fmt.Println("no images to check")
+		svc.sendResponse(nil, "", w)
+		return
+	}
 
 	for _, key := range providerRequest.Request.Keys[1:] { // skip the first key which is the predicate type
 		if svc.Debug {

@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: jfrog-image-digest-provider
+  name: jfrog-evidence-opa-provider
   namespace: gatekeeper-system
 spec:
   replicas: 1
   selector:
     matchLabels:
-      run: jfrog-image-digest-provider
+      run: jfrog-evidence-opa-provider
   template:
     metadata:
       labels:
-        run: jfrog-image-digest-provider
+        run: jfrog-evidence-opa-provider
     spec:
       containers:
-      - image: provider:1.7
+      - image: provider:0.1
         imagePullPolicy: IfNotPresent
-        name: jfrog-image-digest-provider
+        name: jfrog-evidence-opa-provider
         securityContext:
           seccompProfile:
             type: RuntimeDefault
@@ -58,4 +58,17 @@ spec:
                 path: server.crt
               - key: tls.key
                 path: server.key
-      
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jfrog-evidence-opa-provider
+  namespace: gatekeeper-system
+spec:
+  ports:
+  - port: 8443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    run: jfrog-evidence-opa-provider
+  sessionAffinity: None

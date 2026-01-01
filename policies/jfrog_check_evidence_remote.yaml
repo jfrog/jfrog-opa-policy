@@ -1,7 +1,7 @@
 apiVersion: constraints.gatekeeper.sh/v1beta1
 kind: jfrogcheckevidence
 metadata:
-  name: jfrog-check-evidence
+  name: jfrog-check-evidence-remote
 spec:
   match:
     kinds:
@@ -11,4 +11,4 @@ spec:
     checkedRegistries: ["my-jfrog-registry.jfrog.io"]
     # add whitelist for repositories, uncomment to enable
     checkedRepositories: ["docker-local"]
-    checkedPredicateTypes: ["https://slsa.dev/provenance/v1"]
+    checkedPredicateTypes: ["https://pytest.org/evidence/results/v1"]

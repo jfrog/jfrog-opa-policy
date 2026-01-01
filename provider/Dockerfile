@@ -1,8 +1,22 @@
-# Minimal runtime image.
-FROM gcr.io/distroless/base-debian12
+# v3.21.3
+FROM alpine@sha256:ea71a031ed91cd46b00d438876550bc765da43b4ae40f331a12daf62f0937758 AS builder
+
+RUN apk update --no-cache && apk add --no-cache go make
+
+WORKDIR /tmp/provider
+
+# Setup cache
+RUN go env -w GOCACHE=/go-cache
+RUN go env -w GOMODCACHE=/gomod-cache
+
+COPY . .
+RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o main .
+
+ # v3.21.3
+FROM alpine@sha256:ea71a031ed91cd46b00d438876550bc765da43b4ae40f331a12daf62f0937758
 
 WORKDIR /
-COPY --chmod=755 main /main
+COPY --from=builder /tmp/provider/main .
 
 EXPOSE 8443
 USER 1000:1000
