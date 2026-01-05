@@ -87,6 +87,21 @@ input.review.object.spec.template.spec.containers[_].image
 and from 
 input.review.object.spec.template.spec.initContainers[_].image
 
+In case the pod is within the validation scope and the validation is successfull, the pod will be created (validation logs can be viewed inside the provider pod log). 
+
+In case the evidence validation is not successfull, a message will appear and the pod deployment will fail. see below an example for such a failure:
+
+``
+Error from server (Forbidden): error when creating "my-pod.yaml": admission webhook "validation.gatekeeper.sh" denied the request: [jfrog-check-evidence] TARGET IMAGES: ["myjfrog.jfrog.io/docker-local/my-image:1.0.0"], RESPONSE: {"errors": [], "responses": [["myjfrog.jfrog.io/docker-local/my-image:1.0.0", "_invalid"]], "status_code": 200, "system_error": ""}
+``
+
+In case the validtion fails on an error communicating with the server, or some other failure, a different message is returned:
+``
+Error from server (Forbidden): error when creating "my-image.yaml": admission webhook "validation.gatekeeper.sh" denied the request: [jfrog-check-evidence] TARGET IMAGES: ["myjfrog.jfrog.io/docker-local/my-image:1.0"], RESPONSE: {"errors": [], "responses": [], "status_code": 200, "system_error": "unable to get digest for myjfrog.jfrog.io/docker-local/my-image:1.0: failed to get digest, response status: 401 Unauthorized"}
+``
+
+More information can be viewed on the provider log.
+
 
 ## Notes
 - The provider listens on `:8443` with TLS 1.3 and requires client certs from Gatekeeper.
