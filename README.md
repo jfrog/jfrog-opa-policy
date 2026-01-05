@@ -2,12 +2,12 @@
 
 This project offers an External Data Provider for OPA Gatekeeper that checks JFrog Evidence records for container images before they are admitted to the cluster.
 
-## What this repo contains
+## 🎯 What this repo contains
 - `provider/`: Go service implementing the External Data Provider plus Kubernetes deployment, service, and OPA Gatekeeper Provider resources.
 - `templates/`: Gatekeeper `ConstraintTemplate` that calls the provider and acts according it its response.
 - `policies/`: Example constraints configuring which registries and repositories are checked, and which predicate types must be present for images evidence.
 
-## Prerequisites
+## 📋 Prerequisites
 - Kubernetes cluster with Gatekeeper v3.11+ and External Data enabled (mutual TLS required).
 - JFrog Platform with Evidence feature and an access token that can query image metadata and evidence.
 - TLS materials for the provider pod (`server.crt`/`server.key`) and Gatekeeper’s CA (`ca.crt`).
@@ -24,7 +24,6 @@ make sure to set platform (for example arm64) and image tag
 The secrets required for the provider to work are:
 - Provider TLS secrets used by the provider Pod
 - JFrog token allowing the provider to call JFrog platform APIs, token required should have permissions to read and annotate the docker repositories whoes workloadds are being validated 
-- 
 
 To Setup TLS and Access for the provider follow the below instructions:
 - TLS for the provider pod (paths are examples; adjust to your cert files):
@@ -44,7 +43,7 @@ kubectl create secret tls jfrog-provider-tls \
 kubectl -n gatekeeper-system create secret generic jfrog-token-secret --from-literal=token=<jfrog_token>
 ```
 
-## Deploy the JFrog provider
+## 🚀 Deploy the JFrog provider
 Apply the manifests (edit images/tags as needed):
 ```
 kubectl -n gatekeeper-system apply -f provider/deployment.yaml
@@ -54,7 +53,7 @@ The deployment expects:
 - secret `gatekeeper-webhook-server-cert` with OPA Gatekeeper server CA.
 - TLS cert/key from `jfrog-provider-tls` secret created in the previous step.
 
-## Install the Gatekeeper policy
+## 🔧 Install the Gatekeeper policy
 1) Install the `ConstraintTemplate`:
 ```
 kubectl apply -f templates/jfrogcheckevidence.yaml
@@ -68,7 +67,7 @@ Key parameters:
 - `checkedRepositories`: optional repository allowlist, leave empty to have all repositories checked.
 - `checkedPredicateTypes`: evidence predicate types that must be present _and verified_ for each image.
 
-## How the provider validates images (high level)
+## 🔍 How the provider validates images (high level)
 - Gatekeeper sends keys where the first entry is a comma-separated list of predicate types and the rest are image references.
 - For each image, the provider:
   - Sends a `HEAD` api call to JFrog Artifactory to obtain the digest and manifest filename of the image.
@@ -104,6 +103,16 @@ More information can be viewed on the provider log.
 
 
 ## Notes
+
 - The provider listens on `:8443` with TLS 1.3 and requires client certs from Gatekeeper.
 - Update the container image reference in `provider/deployment.yaml` before production use.
 - In order to simplify the setup process, especiall the TLS setup, these instructions are installing the provider under the gatekeeper-system namespace
+
+## 📚 Additional Resources
+- [OPA Gatekeeper Documentation](https://open-policy-agent.github.io/gatekeeper/website/)
+- [GraphQL Documentation](https://graphql.org/learn/)
+- [JFrog Platform Documentation](https://www.jfrog.com/confluence/)
+
+## 🤝 Contributing
+
+Feel free to submit issues and enhancement requests!
