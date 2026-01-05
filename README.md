@@ -87,9 +87,9 @@ input.review.object.spec.template.spec.containers[_].image
 and from 
 input.review.object.spec.template.spec.initContainers[_].image
 
-In case the pod is within the validation scope and the validation is successfull, the pod will be created (validation logs can be viewed inside the provider pod log). 
+In case the pod is within the validation scope and the validation is successful, the pod will be created (validation logs can be viewed inside the provider pod log). 
 
-In case the evidence validation is not successfull, a message will appear and the pod deployment will fail. see below an example for such a failure:
+In case the evidence validation is not successful, a message will appear and the pod deployment will fail. see below an example for such a failure:
 
 ``
 Error from server (Forbidden): error when creating "my-pod.yaml": admission webhook "validation.gatekeeper.sh" denied the request: [jfrog-check-evidence] TARGET IMAGES: ["myjfrog.jfrog.io/docker-local/my-image:1.0.0"], RESPONSE: {"errors": [], "responses": [["myjfrog.jfrog.io/docker-local/my-image:1.0.0", "_invalid"]], "status_code": 200, "system_error": ""}
