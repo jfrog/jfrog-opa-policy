@@ -1,4 +1,4 @@
-FROM alpine@sha256:ea71a031ed91cd46b00d438876550bc765da43b4ae40f331a12daf62f0937758 AS builder
+FROM alpine:3.23.2 AS builder
 
 RUN apk update --no-cache && apk add --no-cache go make
 
@@ -12,7 +12,7 @@ COPY . .
 RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o main .
 
  # v3.21.3
-FROM alpine@sha256:ea71a031ed91cd46b00d438876550bc765da43b4ae40f331a12daf62f0937758
+FROM alpine:3.23.2
 
 WORKDIR /
 COPY --from=builder /tmp/provider/main .
