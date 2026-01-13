@@ -108,7 +108,7 @@ func main() {
 	}
 }
 
-func (s *Service) getEvidence(registry string, repository string, image string, tag string, fileName string, digest string) (bool, error) {
+func (s *Service) getEvidence(registry string, repository string, image string, tag string, digest string) (bool, error) {
 	// call api to get evidence
 	// call api with the format of https://apptrustswampupb.jfrog.io/onemodel/api/v1/graphql
 	url := fmt.Sprintf("https://%s/onemodel/api/v1/graphql", registry)
@@ -119,7 +119,7 @@ func (s *Service) getEvidence(registry string, repository string, image string, 
 	req.Header.Set("Authorization", "Bearer "+s.Token)
 	req.Header.Set("Content-Type", "application/json")
 	evidenceRequest := EvidenceRequest{
-		Query: fmt.Sprintf("{ evidence { searchEvidence(where: { hasSubjectWith: { repositoryKey: \"%s\", path: \"%s/%s\", name: \"%s\", sha256: \"%s\" } }) { edges { node { downloadPath path name sha256 subject { repositoryKey path name } predicateType predicate createdBy createdAt verified } } } }}", repository, image, tag, fileName, digest),
+		Query: fmt.Sprintf("{ evidence { searchEvidence(where: { hasSubjectWith: { repositoryKey: \"%s\", path: \"%s/%s\", sha256: \"%s\" } }) { edges { node { downloadPath path name sha256 subject { repositoryKey path name } predicateType predicate createdBy createdAt verified } } } }}", repository, image, tag, digest),
 	}
 	jsonRequest, err := json.Marshal(evidenceRequest)
 	if err != nil {
@@ -182,7 +182,7 @@ func (s *Service) getEvidence(registry string, repository string, image string, 
 	return true, nil
 }
 
-func (s *Service) getJFrogImageInfo(registry string, repository string, image string, tag string) (string, string, error) {
+func (s *Service) getJFrogImageInfo(registry string, repository string, image string, tag string) (string, error) {
 	// call jfrog api to get the digest
 	// call api with the format of https:/{registry}/artifactory/api/docker/{repository}/v2/{image}/manifests/{tag}
 	// extract tag by splitting :
@@ -194,20 +194,20 @@ func (s *Service) getJFrogImageInfo(registry string, repository string, image st
 
 	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+s.Token)
 	req.Header.Set("Accept", "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json")
 
 	response, err := s.Client.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	if s.Debug {
 		fmt.Println("jfrog image info response:", response)
 	}
 	if response.StatusCode != 200 {
-		return "", "", fmt.Errorf("failed to get digest, response status: %s", response.Status)
+		return "", fmt.Errorf("failed to get digest, response status: %s", response.Status)
 	}
 	//get digest from response X-Checksum-Sha256 header
 	// if Docker-Content-Digest header is present, use it instead of X-Checksum-Sha256
@@ -218,28 +218,14 @@ func (s *Service) getJFrogImageInfo(registry string, repository string, image st
 	// remove sha256: prefix if present
 	digest = strings.TrimPrefix(digest, "sha256:")
 
-	fileName := response.Header.Get("X-Artifactory-Filename")
-	if fileName == "" {
-		contentType := response.Header.Get("Content-Type")
-		// check if Content-Type is application/vnd.docker.distribution.manifest.v2+json
-		if contentType == "application/vnd.docker.distribution.manifest.v2+json" {
-			fileName = "manifest.json"
-		} else if contentType == "application/vnd.oci.image.index.v1+json" {
-			fileName = "list.manifest.json"
-		} else {
-			// default to manifest.json XXX add more types
-			fileName = "manifest.json"
-		}
-	}
 	if s.Debug {
 		fmt.Println("digest:", digest)
-		fmt.Println("fileName:", fileName)
 	}
 
 	if digest == "" {
-		return "", "", fmt.Errorf("failed to get digest from header, response status: %s", response.Status)
+		return "", fmt.Errorf("failed to get digest from header, response status: %s", response.Status)
 	}
-	return digest, fileName, nil
+	return digest, nil
 }
 
 func providerHandler(w http.ResponseWriter, req *http.Request) {
@@ -322,13 +308,13 @@ func providerHandler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		digest, fileName, err := svc.getJFrogImageInfo(registry, repository, image, tag)
+		digest, err := svc.getJFrogImageInfo(registry, repository, image, tag)
 		if err != nil {
 			svc.sendResponse(nil, fmt.Sprintf("unable to get digest for %s: %v", key, err), w)
 			return
 		}
 		// check if evidence exists
-		evidenceExists, err := svc.getEvidence(registry, repository, image, tag, fileName, digest)
+		evidenceExists, err := svc.getEvidence(registry, repository, image, tag, digest)
 
 		if evidenceExists {
 			fmt.Println("evidence found and verified for", key)
