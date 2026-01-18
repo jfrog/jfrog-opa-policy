@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -14,24 +13,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfrog/jfrog-client-go/auth"
+	"github.com/jfrog/jfrog-client-go/config"
+	"github.com/jfrog/jfrog-client-go/onemodel"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
 )
 
 type Service struct {
 	Client         *http.Client
 	Token          string
+	JFrogURL       string
 	Debug          bool
 	PredicateTypes []string
+	OneModelClient onemodel.Manager
 }
 
 const (
 	apiVersion = "externaldata.gatekeeper.sh/v1alpha1"
 )
 
-// Evidence GraphQL request structures.
-type EvidenceRequest struct {
-	Query string `json:"query"`
-}
+const evidenceGraphQLQuery = `{"query":"{ evidence { searchEvidence(where: { hasSubjectWith: { repositoryKey: \"%s\", path: \"%s/%s\", sha256: \"%s\" } }) { edges { node { predicateType providerId verified createdBy createdAt subject { fullPath sha256 } } } } } }"}`
 
 type EvidenceResponse struct {
 	Data EvidenceData `json:"data"`
@@ -54,22 +55,27 @@ type EvidenceEdge struct {
 }
 
 type EvidenceNode struct {
-	DownloadPath  string          `json:"downloadPath"`
-	Path          string          `json:"path"`
-	Name          string          `json:"name"`
-	Sha256        string          `json:"sha256"`
-	Subject       EvidenceSubject `json:"subject"`
 	PredicateType string          `json:"predicateType"`
-	Predicate     json.RawMessage `json:"predicate"`
+	ProviderId    string          `json:"providerId"`
+	Verified      bool            `json:"verified"`
 	CreatedBy     string          `json:"createdBy"`
 	CreatedAt     string          `json:"createdAt"`
-	Verified      bool            `json:"verified"`
+	Subject       EvidenceSubject `json:"subject"`
 }
 
 type EvidenceSubject struct {
-	RepositoryKey string `json:"repositoryKey"`
-	Path          string `json:"path"`
-	Name          string `json:"name"`
+	FullPath string `json:"fullPath"`
+	Sha256   string `json:"sha256"`
+}
+
+// simpleServiceDetails wraps auth.CommonConfigFields to implement auth.ServiceDetails
+// by adding the missing GetVersion method
+type simpleServiceDetails struct {
+	auth.CommonConfigFields
+}
+
+func (s *simpleServiceDetails) GetVersion() (string, error) {
+	return "", nil
 }
 
 func main() {
@@ -77,6 +83,11 @@ func main() {
 	tokenSecret := os.Getenv("JFROG_TOKEN_SECRET")
 	if tokenSecret == "" {
 		log.Fatalf("JFROG_TOKEN_SECRET is not set, make sure to create kubernetes secret called jfrog-token-secret with a JFrog access token as the value")
+	}
+
+	jfrogURL := os.Getenv("JFROG_URL")
+	if jfrogURL != "" {
+		fmt.Printf("JFROG_URL configured: %s\n", jfrogURL)
 	}
 
 	addr := flag.String("addr", ":8443", "listen address for HTTPS")
@@ -108,75 +119,90 @@ func main() {
 	}
 }
 
-func (s *Service) getEvidence(registry string, repository string, image string, tag string, digest string) (bool, error) {
-	// call api to get evidence
-	// call api with the format of https://apptrustswampupb.jfrog.io/onemodel/api/v1/graphql
-	url := fmt.Sprintf("https://%s/onemodel/api/v1/graphql", registry)
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return false, err
-	}
-	req.Header.Set("Authorization", "Bearer "+s.Token)
-	req.Header.Set("Content-Type", "application/json")
-	evidenceRequest := EvidenceRequest{
-		Query: fmt.Sprintf("{ evidence { searchEvidence(where: { hasSubjectWith: { repositoryKey: \"%s\", path: \"%s/%s\", sha256: \"%s\" } }) { edges { node { downloadPath path name sha256 subject { repositoryKey path name } predicateType predicate createdBy createdAt verified } } } }}", repository, image, tag, digest),
-	}
-	jsonRequest, err := json.Marshal(evidenceRequest)
-	if err != nil {
-		return false, err
-	}
-	req.Body = io.NopCloser(bytes.NewBuffer(jsonRequest))
-	if s.Debug {
-		fmt.Println("evidence request:", req.Body)
-	}
-	response, err := s.Client.Do(req)
-	if err != nil {
-		return false, err
-	}
-	defer response.Body.Close()
-	if s.Debug {
-		fmt.Println("evidence response status:", response.StatusCode)
-	}
-	if response.StatusCode != 200 {
-		return false, fmt.Errorf("failed to get evidence, response status: %s", response.Status)
-	}
-	// read response body
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return false, err
-	}
-	if s.Debug {
-		fmt.Println("body:", string(body))
-	}
-	// unmarshal body into EvidenceResponse
-	var evidenceResponse EvidenceResponse
-	err = json.Unmarshal(body, &evidenceResponse)
-	if err != nil {
-		fmt.Println("error unmarshalling evidence response:", err)
-		return false, fmt.Errorf("error unmarshalling evidence response: %v", err)
-	}
-	if s.Debug {
-		fmt.Println("evidence graphQL Response:", evidenceResponse)
+func (s *Service) createOneModelClient(registry string) (onemodel.Manager, error) {
+	jfrogURL := s.JFrogURL
+	if jfrogURL == "" {
+		jfrogURL = fmt.Sprintf("https://%s/", registry)
 	}
 
-	// check we have edges
+	if !strings.HasSuffix(jfrogURL, "/") {
+		jfrogURL += "/"
+	}
+
+	if s.Debug {
+		fmt.Println("creating onemodel client for URL:", jfrogURL)
+	}
+
+	serviceDetails := &simpleServiceDetails{
+		CommonConfigFields: auth.CommonConfigFields{
+			Url:         jfrogURL,
+			AccessToken: s.Token,
+		},
+	}
+
+	serviceConfig, err := config.NewConfigBuilder().
+		SetServiceDetails(serviceDetails).
+		SetDryRun(false).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create service config: %w", err)
+	}
+
+	manager, err := onemodel.NewManager(serviceConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create onemodel manager: %w", err)
+	}
+
+	return manager, nil
+}
+
+func (s *Service) getEvidence(registry string, repository string, image string, tag string, digest string) (bool, error) {
+	if s.OneModelClient == nil {
+		client, err := s.createOneModelClient(registry)
+		if err != nil {
+			return false, fmt.Errorf("failed to create onemodel client: %w", err)
+		}
+		s.OneModelClient = client
+	}
+
+	query := fmt.Sprintf(evidenceGraphQLQuery, repository, image, tag, digest)
+	if s.Debug {
+		fmt.Println("evidence GraphQL query:", query)
+	}
+
+	responseBytes, err := s.OneModelClient.GraphqlQuery([]byte(query))
+	if err != nil {
+		return false, fmt.Errorf("GraphQL query failed: %w", err)
+	}
+
+	if s.Debug {
+		fmt.Println("evidence GraphQL response:", string(responseBytes))
+	}
+
+	var evidenceResponse EvidenceResponse
+	err = json.Unmarshal(responseBytes, &evidenceResponse)
+	if err != nil {
+		fmt.Println("error unmarshalling evidence response:", err)
+		return false, fmt.Errorf("error unmarshalling evidence response: %w", err)
+	}
+
 	if len(evidenceResponse.Data.Evidence.SearchEvidence.Edges) == 0 {
 		return false, fmt.Errorf("no evidence found")
 	}
 
-	// check if we have evidence of predicateType
 	for _, predicateType := range s.PredicateTypes {
-		//for all PredicateTypes check if we have evidence and if it is verified
 		typeFound := false
 		for _, edge := range evidenceResponse.Data.Evidence.SearchEvidence.Edges {
 			if edge.Node.PredicateType == predicateType && edge.Node.Verified {
-				fmt.Println("evidence found and verified for", edge.Node.PredicateType)
+				fmt.Printf("evidence found and verified: predicateType=%s, providerId=%s, createdBy=%s, createdAt=%s, subject.fullPath=%s, subject.sha256=%s\n",
+					edge.Node.PredicateType, edge.Node.ProviderId, edge.Node.CreatedBy, edge.Node.CreatedAt,
+					edge.Node.Subject.FullPath, edge.Node.Subject.Sha256)
 				typeFound = true
 				break
 			}
 		}
 		if !typeFound {
-			return false, fmt.Errorf("no evidence found for predicate type %s", predicateType)
+			return false, fmt.Errorf("no verified evidence found for predicate type %s", predicateType)
 		}
 	}
 	return true, nil
@@ -231,7 +257,7 @@ func (s *Service) getJFrogImageInfo(registry string, repository string, image st
 func providerHandler(w http.ResponseWriter, req *http.Request) {
 	fmt.Println("in providerHandler ")
 	// initializations
-	// Add a reusable HTTP client
+	// Add a reusable HTTP client for Docker HEAD requests (still using raw HTTP)
 	var client = &http.Client{
 		Timeout: 4 * time.Second,
 		Transport: &http.Transport{
@@ -245,13 +271,15 @@ func providerHandler(w http.ResponseWriter, req *http.Request) {
 		fmt.Println("debug mode is enabled")
 	}
 
-	svc := NewService(client, "", debug)
 	tokenSecret := os.Getenv("JFROG_TOKEN_SECRET")
 	if tokenSecret == "" {
+		svc := NewService(client, "", "", debug)
 		svc.sendResponse(nil, "JFROG_TOKEN_SECRET is not set, make sure to create kubernetes secret called jfrog-token-secret with a JFrog access token as the value", w)
 		return
 	}
-	svc.Token = tokenSecret
+
+	jfrogURL := os.Getenv("JFROG_URL")
+	svc := NewService(client, tokenSecret, jfrogURL, debug)
 
 	// only accept POST requests
 	if req.Method != http.MethodPost {
@@ -384,10 +412,11 @@ func (s *Service) SplitImageKey(key string) (string, string, string, string, err
 
 	return registry, repository, image, tag, nil
 }
-func NewService(client *http.Client, token string, debug bool) *Service {
+func NewService(client *http.Client, token string, jfrogURL string, debug bool) *Service {
 	return &Service{
-		Client: client,
-		Token:  token,
-		Debug:  debug,
+		Client:   client,
+		Token:    token,
+		JFrogURL: jfrogURL,
+		Debug:    debug,
 	}
 }
