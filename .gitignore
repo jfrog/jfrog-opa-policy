@@ -10,3 +10,4 @@
 /webhook.yaml
 /examples/**
 provider/main
+provider/certs/

@@ -20,28 +20,77 @@ docker buildx build --platform linux/<your platform> -t provider:<version> .
 ```
 make sure to set platform (for example arm64) and image tag 
 
-## Prepare Kubernetes secrets (namespaces: `gatekeeper-system`)
-The secrets required for the provider to work are:
-- Provider TLS secrets used by the provider Pod
-- JFrog token allowing the provider to call JFrog platform APIs, token required should have permissions to read and annotate the docker repositories whoes workloadds are being validated 
+## Prepare Kubernetes secrets (namespace: `gatekeeper-system`)
 
-To Setup TLS and Access for the provider follow the below instructions:
-- TLS for the provider pod (paths are examples; adjust to your cert files):
-follow the instructions on  
-https://open-policy-agent.github.io/gatekeeper/website/docs/v3.11.x/externaldata/#tls-and-mutual-tls-support to create TLS resources required for the OPA gatekeeper server communication with the provider.
-Once done, use the below instructions to prepare the TLS resources for the provider usage:
+The secrets required for the provider to work are:
+- **Provider TLS secrets** - Used by the provider Pod for secure communication
+- **JFrog token** - Allows the provider to call JFrog platform APIs (requires permissions to read and annotate docker repositories whose workloads are being validated)
+
+> **Important:** Gatekeeper uses mutual TLS; ensure the provider trusts Gatekeeper's CA. The deployment mounts `gatekeeper-webhook-server-cert` as `/tmp/gatekeeper/ca.crt`.
+
+### Option 1: Automated Setup (Recommended)
+
+Run the provided script to generate TLS certificates and create Kubernetes secrets interactively:
+
+```bash
+cd provider
+./generate-tls.sh
 ```
+
+The script will:
+1. Generate a self-signed CA and server certificates
+2. Update `provider.yaml` with the base64-encoded CA bundle
+3. Prompt to create the `jfrog-provider-tls` TLS secret
+4. Prompt to create the `jfrog-token-secret` with your JFrog access token
+
+**Environment variables** (optional):
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERVICE_NAME` | `jfrog-evidence-opa-provider` | Kubernetes service name |
+| `SERVICE_NAMESPACE` | `gatekeeper-system` | Kubernetes namespace |
+| `CERT_VALIDITY_DAYS` | `365` | Certificate validity period |
+| `OUTPUT_DIR` | `./certs` | Output directory for certificates |
+
+### Option 2: Manual Setup
+
+Follow the [OPA Gatekeeper External Data TLS documentation](https://open-policy-agent.github.io/gatekeeper/website/docs/v3.11.x/externaldata/#tls-and-mutual-tls-support) to create TLS resources.
+
+**Step 1: Generate CA certificate**
+```bash
+openssl genrsa -out ca.key 2048
+openssl req -new -x509 -days 365 -key ca.key -subj "/O=JFrog/CN=JFrog Evidence OPA Provider CA" -out ca.crt
+```
+
+**Step 2: Generate server certificate**
+```bash
+openssl genrsa -out server.key 2048
+openssl req -newkey rsa:2048 -nodes -keyout server.key -subj "/CN=jfrog-evidence-opa-provider.gatekeeper-system" -out server.csr
+openssl x509 -req -extfile <(printf "subjectAltName=DNS:jfrog-evidence-opa-provider.gatekeeper-system") -days 365 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt
+```
+
+**Step 3: Update provider.yaml with CA bundle**
+```bash
+# Generate base64-encoded CA bundle and update provider.yaml
+CA_BUNDLE=$(cat ca.crt | base64 | tr -d '\n')
+# Replace the caBundle value in provider/provider.yaml with $CA_BUNDLE
+```
+
+**Step 4: Create TLS secret**
+```bash
 kubectl create secret tls jfrog-provider-tls \
   --cert=./server.crt --key=./server.key \
   -n gatekeeper-system
 ```
-- Gatekeeper uses mutual TLS; ensure the provider trusts Gatekeeper’s CA. The deployment mounts `gatekeeper-webhook-server-cert` as `/tmp/gatekeeper/ca.crt`.
-- JFrog access token (key must be `token`, the pod reads `JFROG_TOKEN_SECRET`):
 
-*Notice that on AWS EKS you can use https://github.com/jfrog/jfrog-registry-operator for creating JFrog image pull secrets and also generic secrets that are short lived nad auto-rotated. 
-```
+**Step 5: Create JFrog token secret**
+
+> **Note:** The key must be `token` - the pod reads it via `JFROG_TOKEN_SECRET` environment variable.
+
+```bash
 kubectl -n gatekeeper-system create secret generic jfrog-token-secret --from-literal=token=<jfrog_token>
 ```
+
+> **Tip:** On AWS EKS you can use [jfrog-registry-operator](https://github.com/jfrog/jfrog-registry-operator) for creating JFrog image pull secrets and also generic secrets that are short-lived and auto-rotated.
 
 ## 🚀 Deploy the JFrog provider
 Apply the manifests (edit images/tags as needed):
