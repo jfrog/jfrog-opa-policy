@@ -84,15 +84,19 @@ func main() {
 	flag.Parse()
 
 	http.HandleFunc("/", providerHandler)
-	caCert, err := os.ReadFile("/tmp/gatekeeper/ca.crt")
-	clientCAs := x509.NewCertPool()
-	clientCAs.AppendCertsFromPEM(caCert)
 
+	// Read Gatekeeper CA certificate for mutual TLS
+	caCert, err := os.ReadFile("/tmp/gatekeeper/ca.crt")
 	if err != nil {
-		panic(err)
+		log.Fatalf("failed to read Gatekeeper CA certificate: %v", err)
 	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(caCert) {
+		log.Fatalf("failed to parse Gatekeeper CA certificate")
+	}
+
 	srv := &http.Server{
-		Addr:              ":8443",
+		Addr:              *addr,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -203,6 +207,8 @@ func (s *Service) getJFrogImageInfo(registry string, repository string, image st
 	if err != nil {
 		return "", err
 	}
+	defer response.Body.Close()
+
 	if s.Debug {
 		fmt.Println("jfrog image info response:", response)
 	}
@@ -357,7 +363,7 @@ func (s *Service) sendResponse(results *[]externaldata.Item, systemErr string, w
 	}
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		panic(err)
+		log.Printf("error encoding response to client: %v", err)
 	}
 }
 
