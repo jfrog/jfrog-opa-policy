@@ -28,6 +28,17 @@ const (
 	apiVersion = "externaldata.gatekeeper.sh/v1alpha1"
 )
 
+// Package-level HTTP client for connection reuse across requests
+var httpClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  true,
+	},
+}
+
 // Evidence GraphQL request structures.
 type EvidenceRequest struct {
 	Query string `json:"query"`
@@ -235,23 +246,12 @@ func (s *Service) getJFrogImageInfo(registry string, repository string, image st
 }
 
 func providerHandler(w http.ResponseWriter, req *http.Request) {
-	fmt.Println("in providerHandler ")
-	// initializations
-	// Add a reusable HTTP client
-	var client = &http.Client{
-		Timeout: 4 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:       100,
-			IdleConnTimeout:    10 * time.Second,
-			DisableCompression: true,
-		},
-	}
 	debug := os.Getenv("DEBUG") == "true"
 	if debug {
-		fmt.Println("debug mode is enabled")
+		fmt.Println("in providerHandler")
 	}
 
-	svc := NewService(client, "", debug)
+	svc := NewService(httpClient, "", debug)
 	tokenSecret := os.Getenv("JFROG_TOKEN_SECRET")
 	if tokenSecret == "" {
 		svc.sendResponse(nil, "JFROG_TOKEN_SECRET is not set, make sure to create kubernetes secret called jfrog-token-secret with a JFrog access token as the value", w)
@@ -283,9 +283,6 @@ func providerHandler(w http.ResponseWriter, req *http.Request) {
 	results := make([]externaldata.Item, 0)
 	// iterate over all keys
 	predicateTypesString := providerRequest.Request.Keys[0]
-	if debug {
-		fmt.Println("predicate types:", predicateTypesString)
-	}
 	if predicateTypesString == "" {
 		svc.sendResponse(nil, "predicate type is not set", w)
 		return
@@ -304,21 +301,32 @@ func providerHandler(w http.ResponseWriter, req *http.Request) {
 
 	for _, key := range providerRequest.Request.Keys[1:] { // skip the first key which is the predicate type
 		if svc.Debug {
-			fmt.Println("Getting digest for:", key)
+			fmt.Println("processing image:", key)
 		}
-		// do something with the key
-		// call jfrog api to get the digest
-		registry, repository, image, tag, err := svc.SplitImageKey(key)
+		// parse the image reference
+		registry, repository, image, tagOrDigest, err := svc.SplitImageKey(key)
 		if err != nil {
 			svc.sendResponse(nil, fmt.Sprintf("unable to split image key for %s: %v", key, err), w)
 			return
 		}
 
-		digest, err := svc.getJFrogImageInfo(registry, repository, image, tag)
-		if err != nil {
-			svc.sendResponse(nil, fmt.Sprintf("unable to get digest for %s: %v", key, err), w)
-			return
+		var digest string
+		var tag string
+
+		// Check if already referenced by digest (starts with "sha256:")
+		if strings.HasPrefix(tagOrDigest, "sha256:") {
+			digest = strings.TrimPrefix(tagOrDigest, "sha256:")
+			tag = tagOrDigest // Use full digest as tag for evidence path
+		} else {
+			// Tag reference - need to resolve digest via API
+			tag = tagOrDigest
+			digest, err = svc.getJFrogImageInfo(registry, repository, image, tag)
+			if err != nil {
+				svc.sendResponse(nil, fmt.Sprintf("unable to get digest for %s: %v", key, err), w)
+				return
+			}
 		}
+
 		// check if evidence exists
 		evidenceExists, err := svc.getEvidence(registry, repository, image, tag, digest)
 
@@ -367,13 +375,25 @@ func (s *Service) sendResponse(results *[]externaldata.Item, systemErr string, w
 	}
 }
 
+// SplitImageKey parses an image reference into its components.
+// Supports both tag format (registry/repo/image:tag) and digest format (registry/repo/image@sha256:...).
 func (s *Service) SplitImageKey(key string) (string, string, string, string, error) {
-	tagParts := strings.Split(key, ":")
-	if len(tagParts) != 2 {
-		return "", "", "", "", fmt.Errorf("key %q missing tag separator ':'", key)
+	var tagOrDigest string
+	var imageAddress string
+
+	// Check if this is a digest reference (contains @sha256:)
+	if idx := strings.Index(key, "@sha256:"); idx != -1 {
+		imageAddress = key[:idx]
+		tagOrDigest = key[idx+1:] // includes "sha256:..."
+	} else {
+		// Tag reference - split on last colon (to handle port numbers in registry)
+		lastColon := strings.LastIndex(key, ":")
+		if lastColon == -1 {
+			return "", "", "", "", fmt.Errorf("key %q missing tag separator ':' or digest '@'", key)
+		}
+		imageAddress = key[:lastColon]
+		tagOrDigest = key[lastColon+1:]
 	}
-	tag := tagParts[1]
-	imageAddress := tagParts[0]
 
 	parts := strings.Split(imageAddress, "/")
 	if len(parts) < 3 {
@@ -385,10 +405,10 @@ func (s *Service) SplitImageKey(key string) (string, string, string, string, err
 	image := strings.Join(parts[2:], "/")
 
 	if s.Debug {
-		fmt.Println("registry:", registry, "repository:", repository, "image:", image, "tag:", tag)
+		fmt.Println("registry:", registry, "repository:", repository, "image:", image, "tagOrDigest:", tagOrDigest)
 	}
 
-	return registry, repository, image, tag, nil
+	return registry, repository, image, tagOrDigest, nil
 }
 func NewService(client *http.Client, token string, debug bool) *Service {
 	return &Service{
