@@ -1,3 +1,4 @@
+# (c) 2026 JFrog Ltd.
 apiVersion: externaldata.gatekeeper.sh/v1beta1
 kind: Provider
 metadata:

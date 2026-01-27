@@ -1,3 +1,4 @@
+# (c) 2026 JFrog Ltd.
 FROM alpine:3.23.2 AS builder
 
 RUN apk update --no-cache && apk add --no-cache go make

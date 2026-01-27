@@ -1,3 +1,4 @@
+// (c) 2026 JFrog Ltd.
 package main
 
 import (
