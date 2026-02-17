@@ -9,7 +9,7 @@ spec:
       - apiGroups: [""]
         kinds: ["Pod"]
   parameters:
-    checkedRegistries: ["my-jfrog-registry.jfrog.io"]
+    checkedRegistries: ["myjfrogregistry.jfrog.io"]
     # add whitelist for repositories, uncomment to enable
     checkedRepositories: ["docker-local"]
     checkedPredicateTypes: ["https://slsa.dev/provenance/v1"]

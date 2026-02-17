@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jmespath/go-jmespath"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
 )
 
@@ -23,11 +24,24 @@ type Service struct {
 	Token          string
 	Debug          bool
 	PredicateTypes []string
+	ContentChecks  map[string][]string // predicate type -> JMESPath expressions
 }
 
 const (
-	apiVersion = "externaldata.gatekeeper.sh/v1alpha1"
+	apiVersion             = "externaldata.gatekeeper.sh/v1alpha1"
+	contentChecksConfigMap = "jfrog-provider-content-checks"
+	k8sTokenPath           = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	k8sNamespacePath       = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+	k8sCACertPath          = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 )
+
+// k8sConfigMap mirrors the relevant fields of a Kubernetes ConfigMap response.
+type k8sConfigMap struct {
+	Data map[string]string `json:"data"`
+}
+
+// Package-level content checks loaded once at provider startup.
+var contentChecks map[string][]string
 
 // Package-level HTTP client for connection reuse across requests
 var httpClient = &http.Client{
@@ -90,6 +104,9 @@ func main() {
 	if tokenSecret == "" {
 		log.Fatalf("JFROG_TOKEN_SECRET is not set, make sure to create kubernetes secret called jfrog-token-secret with a JFrog access token as the value")
 	}
+
+	// Load optional content checks from Kubernetes ConfigMap at startup
+	contentChecks = loadContentChecksFromConfigMap()
 
 	addr := flag.String("addr", ":8443", "listen address for HTTPS")
 	fmt.Printf("starting provider on %s (TLS)\n", *addr)
@@ -171,13 +188,15 @@ func (s *Service) getEvidence(registry string, repository string, image string, 
 		fmt.Println("error unmarshalling evidence response:", err)
 		return false, fmt.Errorf("error unmarshalling evidence response: %v", err)
 	}
-	if s.Debug {
+	/*if s.Debug {
 		fmt.Println("evidence graphQL Response:", evidenceResponse)
-	}
+	}*/
 
 	// check we have edges
 	if len(evidenceResponse.Data.Evidence.SearchEvidence.Edges) == 0 {
 		return false, fmt.Errorf("no evidence found")
+	} else {
+		fmt.Println(len(evidenceResponse.Data.Evidence.SearchEvidence.Edges), "evidence found")
 	}
 
 	// check if we have evidence of predicateType
@@ -186,7 +205,25 @@ func (s *Service) getEvidence(registry string, repository string, image string, 
 		typeFound := false
 		for _, edge := range evidenceResponse.Data.Evidence.SearchEvidence.Edges {
 			if edge.Node.PredicateType == predicateType && edge.Node.Verified {
-				fmt.Println("evidence found and verified for", edge.Node.PredicateType)
+				// If JMESPath content checks exist for this predicate type, evaluate all of them
+				if exprs, ok := s.ContentChecks[predicateType]; ok && len(exprs) > 0 {
+					allPassed := true
+					for _, expr := range exprs {
+						if err := s.validateEdidenceContent(edge.Node, expr); err != nil {
+							if s.Debug {
+								fmt.Printf("content check failed for %s: %v\n", predicateType, err)
+							}
+							allPassed = false
+							break
+						}
+					}
+					if !allPassed {
+						continue
+					}
+					fmt.Println("evidence found, verified, and all content checks passed for", edge.Node.PredicateType)
+				} else {
+					fmt.Println("evidence found and verified for", edge.Node.PredicateType)
+				}
 				typeFound = true
 				break
 			}
@@ -253,6 +290,7 @@ func providerHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	svc := NewService(httpClient, "", debug)
+	svc.ContentChecks = contentChecks
 	tokenSecret := os.Getenv("JFROG_TOKEN_SECRET")
 	if tokenSecret == "" {
 		svc.sendResponse(nil, "JFROG_TOKEN_SECRET is not set, make sure to create kubernetes secret called jfrog-token-secret with a JFrog access token as the value", w)
@@ -411,6 +449,156 @@ func (s *Service) SplitImageKey(key string) (string, string, string, string, err
 
 	return registry, repository, image, tagOrDigest, nil
 }
+
+// loadContentChecksFromConfigMap reads the jfrog-provider-content-checks
+// ConfigMap via the in-cluster Kubernetes API. Each data value in the ConfigMap
+// is expected to be a JSON object mapping predicate types to an array of
+// JMESPath expressions. If the ConfigMap does not exist or the API is
+// unreachable the provider starts with no content checks (feature is optional).
+//
+// Example ConfigMap data value:
+//
+//	{
+//	  "https://in-toto.io/attestation/vuln/v0.1": [
+//	    "predicate.scanner.result == `PASSED`",
+//	    "predicate.scanner.name == `Xray`"
+//	  ]
+//	}
+func loadContentChecksFromConfigMap() map[string][]string {
+	fmt.Println("loading content checks from config map")
+	checks := make(map[string][]string)
+
+	token, err := os.ReadFile(k8sTokenPath)
+	if err != nil {
+		fmt.Printf("skipping content checks: unable to read service account token: %v\n", err)
+		return checks
+	}
+
+	namespace, err := os.ReadFile(k8sNamespacePath)
+	if err != nil {
+		fmt.Printf("skipping content checks: unable to read namespace: %v\n", err)
+		return checks
+	}
+
+	caCert, err := os.ReadFile(k8sCACertPath)
+	if err != nil {
+		fmt.Printf("skipping content checks: unable to read CA cert: %v\n", err)
+		return checks
+	}
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		fmt.Println("skipping content checks: unable to parse Kubernetes CA certificate")
+		return checks
+	}
+
+	k8sClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:    caCertPool,
+				MinVersion: tls.VersionTLS12,
+			},
+		},
+	}
+
+	url := fmt.Sprintf("https://kubernetes.default.svc/api/v1/namespaces/%s/configmaps/%s",
+		strings.TrimSpace(string(namespace)), contentChecksConfigMap)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		fmt.Printf("skipping content checks: %v\n", err)
+		return checks
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+
+	resp, err := k8sClient.Do(req)
+	if err != nil {
+		fmt.Printf("skipping content checks: unable to reach Kubernetes API: %v\n", err)
+		return checks
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		fmt.Printf("content checks configmap %q not found (skipping)\n", contentChecksConfigMap)
+		return checks
+	}
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("skipping content checks: Kubernetes API returned %s\n", resp.Status)
+		return checks
+	}
+
+	var cm k8sConfigMap
+	if err := json.NewDecoder(resp.Body).Decode(&cm); err != nil {
+		fmt.Printf("skipping content checks: unable to decode configmap: %v\n", err)
+		return checks
+	}
+
+	fmt.Println("cm.Data:", cm.Data)
+
+	for dataKey, dataValue := range cm.Data {
+		var entryChecks map[string][]string
+		if err := json.Unmarshal([]byte(dataValue), &entryChecks); err != nil {
+			fmt.Printf("skipping content check entry %q: %v\n", dataKey, err)
+			continue
+		}
+		for predicateType, exprs := range entryChecks {
+			fmt.Printf("predicateType: %s, expressions: %v\n", predicateType, exprs)
+			checks[predicateType] = append(checks[predicateType], exprs...)
+		}
+	}
+
+	fmt.Printf("loaded %d content check rule(s) from configmap %s\n", len(checks), contentChecksConfigMap)
+	return checks
+}
+
+// validateEdidenceContent evaluates a JMESPath expression against the full
+// evidence node. The check passes when the expression returns a truthy value
+// (non-nil, non-false, non-empty string/slice/map). Returns nil on success.
+func (s *Service) validateEdidenceContent(evidence EvidenceNode, expression string) error {
+	raw, err := json.Marshal(evidence)
+	if err != nil {
+		return fmt.Errorf("failed to marshal evidence node: %v", err)
+	}
+	var evidenceData interface{}
+	if err := json.Unmarshal(raw, &evidenceData); err != nil {
+		return fmt.Errorf("failed to parse evidence JSON: %v", err)
+	}
+
+	result, err := jmespath.Search(expression, evidenceData)
+	if err != nil {
+		return fmt.Errorf("JMESPath expression %q failed: %v", expression, err)
+	}
+
+	if s.Debug {
+		fmt.Printf("JMESPath expression %q returned: %v\n", expression, result)
+	}
+
+	if !isTruthy(result) {
+		return fmt.Errorf("JMESPath expression %q evaluated to falsy value: %v", expression, result)
+	}
+	return nil
+}
+
+// isTruthy applies JMESPath truthiness rules: nil, false, empty string, empty
+// slice, and empty map are falsy; everything else is truthy.
+func isTruthy(v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		return val != ""
+	case []interface{}:
+		return len(val) > 0
+	case map[string]interface{}:
+		return len(val) > 0
+	default:
+		return true
+	}
+}
+
 func NewService(client *http.Client, token string, debug bool) *Service {
 	return &Service{
 		Client: client,

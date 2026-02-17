@@ -4,8 +4,9 @@ This project offers an External Data Provider for OPA Gatekeeper that checks JFr
 
 ## 🎯 What this repo contains
 - `provider/`: Go service implementing the External Data Provider plus Kubernetes deployment, service, and OPA Gatekeeper Provider resources.
-- `templates/`: Gatekeeper `ConstraintTemplate` that calls the provider and acts according it its response.
+- `templates/`: Gatekeeper `ConstraintTemplate` that calls the provider and acts according to its response.
 - `policies/`: Example constraints configuring which registries and repositories are checked, and which predicate types must be present for images evidence.
+- `configmap-examples/`: Example Kubernetes resources with a content-check ConfigMap for validating evidence predicate content.
 
 ## 📋 Prerequisites
 - Kubernetes cluster with Gatekeeper v3.11+ and External Data enabled (mutual TLS required).
@@ -13,7 +14,7 @@ This project offers an External Data Provider for OPA Gatekeeper that checks JFr
 - TLS materials for the provider pod (`server.crt`/`server.key`) and Gatekeeper’s CA (`ca.crt`).
 
 ## Build and publish the provider image
-1) Build the providfer image from `provider/`:
+1) Build the provider image from `provider/`:
 ```
 cd provider
 docker buildx build --platform linux/<your platform> -t provider:<version> .
@@ -119,10 +120,88 @@ Key parameters:
 ## 🔍 How the provider validates images (high level)
 - Gatekeeper sends keys where the first entry is a comma-separated list of predicate types and the rest are image references.
 - For each image, the provider:
-  - Sends a `HEAD` api call to JFrog Artifactory to obtain the digest and manifest filename of the image.
-  - Queries JFrog Evidence GraphQL (`/onemodel/api/v1/graphql`) for the evidence collection attached to the image.
-  - Returns `_valid` or `_invalid` per image back to Gatekeeper; any missing evidence predicate type yields a violation.
+  1. Sends a `HEAD` API call to JFrog Artifactory to obtain the digest and manifest filename of the image.
+  2. Queries JFrog Evidence GraphQL (`/onemodel/api/v1/graphql`) for the evidence collection attached to the image.
+  3. Verifies that each required predicate type has at least one **verified** evidence record.
+  4. If **content checks** are available (see below), evaluates every JMESPath expression against the matching evidence node. All expressions must return truthy values.
+  5. Returns `_valid` or `_invalid` per image back to Gatekeeper; any missing or non-conforming evidence yields a violation.
 - Set `DEBUG=true` to log requests/responses inside the provider pod.
+
+## 🔎 Content Checks (optional)
+
+By default the provider only verifies that evidence **exists** and is **signed** for each required predicate type. Content checks let you go further and validate the **content** of the evidence predicate using [JMESPath](https://jmespath.org/) expressions.
+
+### How it works
+1. At startup the provider reads a Kubernetes ConfigMap named `jfrog-provider-content-checks` in the same namespace.
+2. The ConfigMap contains a JSON object mapping each predicate type to an array of JMESPath expressions.
+3. When evidence is found and verified for a predicate type, every expression configured for that type is evaluated against the full evidence node (including fields like `predicate`, `createdBy`, `createdAt`, etc.).
+4. All expressions must evaluate to a **truthy** value (non-nil, non-false, non-empty string/array/map). If any expression fails, the evidence is treated as non-conforming and the provider continues searching for another matching evidence record.
+5. If no evidence record passes all checks, the image is marked `_invalid`.
+
+> **Note:** Content checks are entirely optional. If the ConfigMap does not exist or cannot be read, the provider falls back to existence + signature verification only.
+
+### ConfigMap format
+
+Create a ConfigMap in the `gatekeeper-system` namespace (the same namespace as the provider):
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jfrog-provider-content-checks
+data:
+  checks: |
+    {
+      "https://slsa.dev/provenance/v1": [
+        "starts_with(predicate.buildDefinition.externalParameters.workflow.repository, 'https://github.com/my-org')",
+        "starts_with(createdBy, 'ci-user@example.com')",
+        "starts_with(predicate.runDetails.builder.id, 'https://github.com/my-org')",
+        "predicate.buildDefinition.resolvedDependencies[?!starts_with(uri, 'git+https://github.com/my-org')] | length(@) == `0`"
+      ],
+      "https://sonarsource.com/evidence/sonarqube/v1": [
+        "predicate.status == 'OK'"
+      ]
+    }
+```
+
+An example ConfigMap is provided at `examples/jfrog-provider-content-checks.yaml`.
+
+### Expression examples
+
+Expressions are evaluated against the full evidence node JSON. Useful fields include:
+
+| Field | Description |
+|-------|-------------|
+| `predicate` | The parsed evidence predicate (structure depends on the predicate type) |
+| `createdBy` | Identity of who created the evidence |
+| `createdAt` | Timestamp of evidence creation |
+| `verified` | Whether the evidence signature was verified |
+| `predicateType` | The predicate type URI |
+
+Example expressions:
+
+| Expression | Purpose |
+|------------|---------|
+| `predicate.status == 'OK'` | Assert a status field equals a specific value |
+| `starts_with(createdBy, 'ci-bot@')` | Ensure evidence was created by a CI system |
+| `predicate.scanner.name == 'Xray'` | Verify a specific scanner produced the evidence |
+| `predicate.buildDefinition.resolvedDependencies[?!starts_with(uri, 'git+https://github.com/my-org')] \| length(@) == \`0\`` | Ensure all resolved dependencies come from a trusted organization |
+
+### Deploying content checks
+
+```bash
+# Apply the content checks ConfigMap
+kubectl -n gatekeeper-system apply -f examples/jfrog-provider-content-checks.yaml
+
+# Restart the provider to pick up the new checks (loaded once at startup)
+kubectl -n gatekeeper-system rollout restart deployment jfrog-evidence-opa-provider
+```
+
+> **Important:** The provider reads the ConfigMap only at startup. After changing the ConfigMap, restart the provider pod for the new rules to take effect.
+
+### RBAC
+
+The provider's deployment manifest already includes a `ServiceAccount`, `Role`, and `RoleBinding` that grant `get` access to the `jfrog-provider-content-checks` ConfigMap. No additional RBAC configuration is needed.
 
 ## Try it out
 With the constraint installed, apply a Pod to check the policy:
@@ -130,7 +209,7 @@ With the constraint installed, apply a Pod to check the policy:
 kubectl apply -f pod.yaml
 ```
 If the required evidence is missing or unverified, the admission request will be rejected with a message that includes the checked images and provider response.
-Notice this ConstraintTemplate is targeting Pods, if the need is to validate deployments, then the ConstraintTemplate needs to chaknge and collect images from 
+Notice this ConstraintTemplate is targeting Pods. If the need is to validate Deployments, then the ConstraintTemplate needs to change and collect images from 
 input.review.object.spec.template.spec.containers[_].image
 and from 
 input.review.object.spec.template.spec.initContainers[_].image
@@ -143,7 +222,7 @@ In case the evidence validation is not successful, a message will appear and the
 Error from server (Forbidden): error when creating "my-pod.yaml": admission webhook "validation.gatekeeper.sh" denied the request: [jfrog-check-evidence] TARGET IMAGES: ["myjfrog.jfrog.io/docker-local/my-image:1.0.0"], RESPONSE: {"errors": [], "responses": [["myjfrog.jfrog.io/docker-local/my-image:1.0.0", "_invalid"]], "status_code": 200, "system_error": ""}
 ``
 
-In case the validtion fails on an error communicating with the server, or some other failure, a different message is returned:
+In case the validation fails on an error communicating with the server, or some other failure, a different message is returned:
 ``
 Error from server (Forbidden): error when creating "my-image.yaml": admission webhook "validation.gatekeeper.sh" denied the request: [jfrog-check-evidence] TARGET IMAGES: ["myjfrog.jfrog.io/docker-local/my-image:1.0"], RESPONSE: {"errors": [], "responses": [], "status_code": 200, "system_error": "unable to get digest for myjfrog.jfrog.io/docker-local/my-image:1.0: failed to get digest, response status: 401 Unauthorized"}
 ``

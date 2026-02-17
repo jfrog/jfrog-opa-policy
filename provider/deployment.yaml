@@ -1,4 +1,35 @@
 # (c) 2026 JFrog Ltd.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jfrog-evidence-opa-provider
+  namespace: gatekeeper-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jfrog-evidence-opa-provider
+  namespace: gatekeeper-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["jfrog-provider-content-checks"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jfrog-evidence-opa-provider
+  namespace: gatekeeper-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jfrog-evidence-opa-provider
+subjects:
+  - kind: ServiceAccount
+    name: jfrog-evidence-opa-provider
+    namespace: gatekeeper-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,8 +45,9 @@ spec:
       labels:
         run: jfrog-evidence-opa-provider
     spec:
+      serviceAccountName: jfrog-evidence-opa-provider
       containers:
-      - image: provider:0.1
+      - image: provider:0.2
         imagePullPolicy: IfNotPresent
         name: jfrog-evidence-opa-provider
         securityContext:

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jfrog-provider-content-checks
+data:
+  checks: |
+    {
+      "https://slsa.dev/provenance/v1":[
+      "starts_with(predicate.buildDefinition.externalParameters.workflow.repository, 'https://github.com/my-org')",
+      "starts_with(createdBy, 'myuser@my-org.com')",
+      "starts_with(predicate.runDetails.builder.id, 'https://github.com/my-org')",
+      "predicate.buildDefinition.resolvedDependencies[?!starts_with(uri, 'git+https://github.com/my-org')] | length(@) == `0`"
+      ],
+      "https://sonarsource.com/evidence/sonarqube/v1":[
+      "predicate.status == 'OK'"
+      ]
+    }
