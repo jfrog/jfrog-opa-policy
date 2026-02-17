@@ -240,6 +240,7 @@ More information can be viewed on the provider log.
 - [OPA Gatekeeper Documentation](https://open-policy-agent.github.io/gatekeeper/website/)
 - [GraphQL Documentation](https://graphql.org/learn/)
 - [JFrog Platform Documentation](https://www.jfrog.com/confluence/)
+- [Jamespath Documentation](https://jmespath.org/)
 
 ## 🤝 Contributing
 
